@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 )
 
@@ -21,18 +22,40 @@ type Schedule struct {
 	} `json:"Sched"`
 }
 
-func main() {
-	var sched Schedule
-	resp, err := http.Get("https://www.ursei.ac.ru/Services/GetGsSched?grpid=26066&yearid=26&monthnum=12")
+func getScheduleData(groupId, yearId, mountNum int, schedChan chan *Schedule) {
+	var sched *Schedule
+	url := fmt.Sprintf(
+		"https://www.ursei.ac.ru/Services/GetGsSched?grpid=%d&yearid=%d&monthnum=%d",
+		groupId, yearId, mountNum)
+
+	resp, err := http.Get(url)
 	if err != nil {
-		panic(err)
+		log.Println(err)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err := json.Unmarshal([]byte(body), &sched); err != nil {
-		fmt.Println(err)
+		log.Println(err)
 	}
 
+	schedChan <- sched
+}
+
+func getAllSchedules() {
+	groups := []int{26066, 26067}
+	schedChan := make(chan *Schedule, len(groups))
+
+	for _, group := range groups {
+		go getScheduleData(group, 26, 12, schedChan)
+	}
+
+	for i := 0; i < len(groups); i++ {
+		sched :=<-schedChan
+		sched.printSched()
+	}
+}
+
+func (sched *Schedule) printSched() {
 	for _, day := range sched.Sched {
 		fmt.Printf("Дата: %v, День: %v\n", day.DatePair, day.DayWeek)
 		fmt.Printf("Расписание:\n")
@@ -43,4 +66,8 @@ func main() {
 		}
 		fmt.Println()
 	}
+}
+
+func main() {
+	getAllSchedules()
 }
