@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+
+	"github.com/go-redis/redis/v8"
 )
 
 type Schedule struct {
@@ -22,6 +25,12 @@ type Schedule struct {
 	} `json:"Sched"`
 }
 
+var redisConnection = redis.Options{
+	Addr:     "localhost:6379",
+	Password: "",
+	DB:       0,
+}
+
 func getScheduleData(groupId, yearId, mountNum int, schedChan chan *Schedule) {
 	var sched *Schedule
 	url := fmt.Sprintf(
@@ -29,9 +38,11 @@ func getScheduleData(groupId, yearId, mountNum int, schedChan chan *Schedule) {
 		groupId, yearId, mountNum)
 
 	resp, err := http.Get(url)
+
 	if err != nil {
 		log.Println(err)
 	}
+
 
 	body, err := io.ReadAll(resp.Body)
 	if err := json.Unmarshal([]byte(body), &sched); err != nil {
@@ -41,18 +52,46 @@ func getScheduleData(groupId, yearId, mountNum int, schedChan chan *Schedule) {
 	schedChan <- sched
 }
 
-func getAllSchedules() {
-	groups := []int{26066, 26067}
+func saveScheduleToRedis(group int, sched *Schedule) {
+	ctx := context.Background()
+	rdb := redis.NewClient(&redisConnection)
+
+	schedJson, err := json.Marshal(sched)
+	if err != nil {
+		panic(err)
+	}
+
+	rdb.Set(ctx, fmt.Sprint(group), schedJson, 0)
+}
+
+func getAllSchedules(groups []int) {
 	schedChan := make(chan *Schedule, len(groups))
 
 	for _, group := range groups {
 		go getScheduleData(group, 26, 12, schedChan)
 	}
 
-	for i := 0; i < len(groups); i++ {
-		sched :=<-schedChan
-		sched.printSched()
+	for _, group := range groups {
+		go saveScheduleToRedis(group, <-schedChan)
 	}
+}
+
+func getScheduleFromDatabase(group int) *Schedule {
+	ctx := context.Background()
+	rdb := redis.NewClient(&redisConnection)
+
+	schedJson, err := rdb.Get(ctx, fmt.Sprint(group)).Result()
+	if err != nil {
+		log.Println(err)
+	}
+
+	var sched Schedule
+
+	if err := json.Unmarshal([]byte(schedJson), &sched); err != nil {
+		log.Println(err)
+	}
+
+	return &sched
 }
 
 func (sched *Schedule) printSched() {
@@ -69,5 +108,11 @@ func (sched *Schedule) printSched() {
 }
 
 func main() {
-	getAllSchedules()
+	groups := []int{26066, 26067}
+	getAllSchedules(groups)
+
+	for _, group := range groups {
+		sched := getScheduleFromDatabase(group)
+		sched.printSched()
+	}
 }
