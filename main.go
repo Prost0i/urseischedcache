@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -80,26 +81,34 @@ func (scheduleIn *ScheduleIn) convertFormat(groupId, yearId, monthNum int) *Mont
 	return &monthSchedule
 }
 
-func getScheduleData(groupId, yearId, mountNum int) *MonthSchedule {
+func getScheduleData(groupId, yearId, mountNum int) (*MonthSchedule, error) {
 	var scheduleIn ScheduleIn
 	url := fmt.Sprintf(
 		"https://www.ursei.ac.ru/Services/GetGsSched?grpid=%d&yearid=%d&monthnum=%d",
 		groupId, yearId, mountNum)
 
-	resp, err := http.Get(url)
+	httpClient := http.Client{
+		Timeout: 10 * time.Second,
+	}
 
+	resp, err := httpClient.Get(url)
 	if err != nil {
-		log.Println(err)
+		return nil, err
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err := json.Unmarshal([]byte(body), &scheduleIn); err != nil {
-		log.Println(err)
+		return nil, err
+	}
+
+	if len(scheduleIn.Sched) < 1 {
+		err := fmt.Errorf("UrSEI Server error. Cant json.Unmarshal().")
+		return nil, err
 	}
 
 	monthSchedule := scheduleIn.convertFormat(groupId, yearId, mountNum)
 
-	return monthSchedule
+	return monthSchedule, nil
 }
 
 func (monthSchedule *MonthSchedule) saveScheduleToRedis() {
@@ -175,7 +184,11 @@ func main() {
 	}
 
 	for _, i := range data {
-		monthSchedule := getScheduleData(i.group, i.year, i.month)
+		monthSchedule, err := getScheduleData(i.group, i.year, i.month)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
 		monthSchedule.saveScheduleToRedis()
 	}
 
