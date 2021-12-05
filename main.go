@@ -98,6 +98,12 @@ func getScheduleData(groupId, yearId, mountNum int) (*MonthSchedule, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err := json.Unmarshal([]byte(body), &scheduleIn); err != nil {
+		var scheduleInEmpty struct{string}
+		if err := json.Unmarshal([]byte(body), &scheduleInEmpty); err != nil {
+			return nil, err
+		}
+
+		err := fmt.Errorf("Schedule is empty")
 		return nil, err
 	}
 
@@ -125,7 +131,7 @@ func (monthSchedule *MonthSchedule) saveScheduleToRedis() {
 	rdb.Set(ctx, redisName, scheduleJson, 0)
 }
 
-func getMonthScheduleFromDatabase(groupId, yearId, monthNum int) *MonthSchedule {
+func getMonthScheduleFromDatabase(groupId, yearId, monthNum int) (*MonthSchedule, error) {
 	ctx := context.Background()
 	rdb := redis.NewClient(&redisConnection)
 
@@ -133,15 +139,15 @@ func getMonthScheduleFromDatabase(groupId, yearId, monthNum int) *MonthSchedule 
 
 	scheduleJson, err := rdb.Get(ctx, redisName).Result()
 	if err != nil {
-		log.Println(err)
+		return nil, err
 	}
 
 	var monthSchedule MonthSchedule
 	if err := json.Unmarshal([]byte(scheduleJson), &monthSchedule); err != nil {
-		log.Println(err)
+		return nil, err
 	}
 
-	return &monthSchedule
+	return &monthSchedule, nil
 }
 
 func (monthSchedule *MonthSchedule) printMonthSchedule() {
@@ -227,6 +233,11 @@ func main() {
 	}{
 		{
 			group: 26066,
+			year: 26,
+			month: 1,
+		},
+		{
+			group: 26066,
 			year:  26,
 			month: 12,
 		},
@@ -241,6 +252,10 @@ func main() {
 		getPrevMonths(i.group, i.year, i.month)
 		monthSchedule, err := getScheduleData(i.group, i.year, i.month)
 		if err != nil {
+			if err.Error() == "Schedule is empty" {
+				continue
+			}
+
 			log.Println(err)
 			continue
 		}
@@ -248,7 +263,15 @@ func main() {
 	}
 
 	for _, i := range data {
-		schedule := getMonthScheduleFromDatabase(i.group, i.year, i.month)
+		schedule, err := getMonthScheduleFromDatabase(i.group, i.year, i.month)
+		if err != nil {
+			if err.Error() == "redis: nil" {
+				continue
+			} else {
+				log.Println(err)
+				continue
+			}
+		}
 		schedule.printMonthSchedule()
 	}
 }
