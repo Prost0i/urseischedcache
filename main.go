@@ -158,6 +158,65 @@ func (monthSchedule *MonthSchedule) printMonthSchedule() {
 	}
 }
 
+func checkMonthScheduleExists(group, year, month int) (bool, error) {
+	ctx := context.Background()
+	rdb := redis.NewClient(&redisConnection)
+
+	redisName := fmt.Sprintf("%d_%d_%d", group, year, month)
+
+	exists, err := rdb.Exists(ctx, redisName).Result()
+	if err != nil {
+		return false, err
+
+	}
+
+	if exists != 0 {
+		return true, nil
+	} else {
+		return false, nil
+	}
+}
+
+func getPrevMonths(group, year, month int) error {
+	studyYearMonths := []int{9, 10, 11, 12, 1, 2, 3, 4, 5, 6}
+
+	isStudyYear := false
+	for _, i := range studyYearMonths {
+		if i == month {
+			isStudyYear = true
+			break
+		}
+	}
+
+	if !isStudyYear {
+		err := fmt.Errorf("Month is not in study year")
+		return err
+	}
+
+	for i := 0; studyYearMonths[i] != month; i++ {
+		currentMonth := studyYearMonths[i]
+		exists, err := checkMonthScheduleExists(group, year, currentMonth)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		if exists {
+			continue
+		}
+
+		monthSchedule, err := getScheduleData(group, year, currentMonth)
+		if err != nil {
+			log.Println(err)
+			continue
+		}
+
+		monthSchedule.saveScheduleToRedis()
+	}
+
+	return nil
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
@@ -166,11 +225,6 @@ func main() {
 		year  int
 		month int
 	}{
-		{
-			group: 26066,
-			year:  26,
-			month: 11,
-		},
 		{
 			group: 26066,
 			year:  26,
@@ -184,6 +238,7 @@ func main() {
 	}
 
 	for _, i := range data {
+		getPrevMonths(i.group, i.year, i.month)
 		monthSchedule, err := getScheduleData(i.group, i.year, i.month)
 		if err != nil {
 			log.Println(err)
