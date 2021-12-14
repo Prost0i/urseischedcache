@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -53,6 +54,10 @@ var redisConnection = redis.Options{
 	DB:       0,
 }
 
+func createRedisNameString(group, year, month int) string {
+	return fmt.Sprintf("%d_%d_%d", group, year, month)
+}
+
 func (scheduleIn *ScheduleIn) convertFormat(groupId, yearId, monthNum int) *MonthSchedule {
 	var monthSchedule MonthSchedule
 
@@ -81,11 +86,11 @@ func (scheduleIn *ScheduleIn) convertFormat(groupId, yearId, monthNum int) *Mont
 	return &monthSchedule
 }
 
-func getScheduleData(groupId, yearId, mountNum int) (*MonthSchedule, error) {
+func getScheduleData(groupId, yearId, monthNum int) (*MonthSchedule, error) {
 	var scheduleIn ScheduleIn
 	url := fmt.Sprintf(
 		"https://www.ursei.ac.ru/Services/GetGsSched?grpid=%d&yearid=%d&monthnum=%d",
-		groupId, yearId, mountNum)
+		groupId, yearId, monthNum)
 
 	httpClient := http.Client{
 		Timeout: 10 * time.Second,
@@ -112,7 +117,8 @@ func getScheduleData(groupId, yearId, mountNum int) (*MonthSchedule, error) {
 		return nil, err
 	}
 
-	monthSchedule := scheduleIn.convertFormat(groupId, yearId, mountNum)
+	log.Printf("Getting %d_%d_%d schedule\n", groupId, yearId, monthNum);
+	monthSchedule := scheduleIn.convertFormat(groupId, yearId, monthNum)
 
 	return monthSchedule, nil
 }
@@ -126,7 +132,7 @@ func (monthSchedule *MonthSchedule) saveScheduleToRedis() {
 		panic(err)
 	}
 
-	redisName := fmt.Sprintf("%d_%d_%d", monthSchedule.GroupId, monthSchedule.YearId, monthSchedule.Month)
+	redisName := createRedisNameString(monthSchedule.GroupId, monthSchedule.YearId, monthSchedule.Month)
 
 	rdb.Set(ctx, redisName, scheduleJson, 0)
 }
@@ -135,7 +141,7 @@ func getMonthScheduleFromDatabase(groupId, yearId, monthNum int) (*MonthSchedule
 	ctx := context.Background()
 	rdb := redis.NewClient(&redisConnection)
 
-	redisName := fmt.Sprintf("%d_%d_%d", groupId, yearId, monthNum)
+	redisName := createRedisNameString(groupId, yearId, monthNum)
 
 	scheduleJson, err := rdb.Get(ctx, redisName).Result()
 	if err != nil {
@@ -168,7 +174,7 @@ func checkMonthScheduleExists(group, year, month int) (bool, error) {
 	ctx := context.Background()
 	rdb := redis.NewClient(&redisConnection)
 
-	redisName := fmt.Sprintf("%d_%d_%d", group, year, month)
+	redisName := createRedisNameString(group, year, month)
 
 	exists, err := rdb.Exists(ctx, redisName).Result()
 	if err != nil {
@@ -223,19 +229,14 @@ func getPrevMonths(group, year, month int) error {
 	return nil
 }
 
-func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
-	data := []struct {
+func runWorkers() {
+	type scheduleInfo struct{
 		group int
 		year  int
 		month int
-	}{
-		{
-			group: 26066,
-			year: 26,
-			month: 1,
-		},
+	}
+
+	data := []scheduleInfo{
 		{
 			group: 26066,
 			year:  26,
@@ -248,30 +249,30 @@ func main() {
 		},
 	}
 
+	var wg sync.WaitGroup
 	for _, i := range data {
-		getPrevMonths(i.group, i.year, i.month)
-		monthSchedule, err := getScheduleData(i.group, i.year, i.month)
-		if err != nil {
-			if err.Error() == "Schedule is empty" {
-				continue
-			}
+		wg.Add(1)
+		go func(si scheduleInfo) {
+			defer wg.Done()
+			getPrevMonths(si.group, si.year, si.month)
+			monthSchedule, err := getScheduleData(si.group, si.year, si.month)
+			if err != nil {
+				if err.Error() == "Schedule is empty" {
+					return
+				}
 
-			log.Println(err)
-			continue
-		}
-		monthSchedule.saveScheduleToRedis()
-	}
-
-	for _, i := range data {
-		schedule, err := getMonthScheduleFromDatabase(i.group, i.year, i.month)
-		if err != nil {
-			if err.Error() == "redis: nil" {
-				continue
-			} else {
 				log.Println(err)
-				continue
+				return
 			}
-		}
-		schedule.printMonthSchedule()
+			monthSchedule.saveScheduleToRedis()
+		}(i)
 	}
+
+	wg.Wait()
+}
+
+func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	runWorkers()
 }
