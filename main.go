@@ -27,6 +27,44 @@ type ScheduleIn struct {
 	} `json:"Sched"`
 }
 
+type ScheduleInitDataIn struct {
+	YearList []struct {
+		YearID    int    `json:"Year_ID"`
+		EduYear   string `json:"EduYear"`
+		DateStart string `json:"DateStart"`
+		DateEnd   string `json:"DateEnd"`
+	} `json:"YearList"`
+	GSTree []struct {
+		YearID  int `json:"Year_ID"`
+		FormEdu []struct {
+			FormEduID   int    `json:"FormEdu_ID"`
+			FormEduName string `json:"FormEduName"`
+			Vis         bool   `json:"vis"`
+			Arr         []struct {
+				Curs int  `json:"Curs"`
+				Vis  bool `json:"vis"`
+				Arr  []struct {
+					GSID      int    `json:"GS_ID"`
+					CursNum   int    `json:"CursNum"`
+					GSName    string `json:"GSName"`
+					PlanDefID int    `json:"PlanDef_ID"`
+				} `json:"arr"`
+			} `json:"arr"`
+		} `json:"FormEdu"`
+	} `json:"GSTree"`
+	Months []struct {
+		MonthID     int    `json:"Month_ID"`
+		MonthNumber int    `json:"MonthNumber"`
+		MonthName   string `json:"MonthName"`
+	} `json:"Months"`
+}
+
+type Groups []struct {
+	EducationType string `json:"educationType"`
+	GroupName     string `json:"groupName"`
+	GroupID       int    `json:"groupID"`
+}
+
 type Pair struct {
 	Subject   string `json:"subject"`
 	Teacher   string `json:"teacher"`
@@ -86,6 +124,32 @@ func (scheduleIn *ScheduleIn) convertFormat(groupId, yearId, monthNum int) *Mont
 	return &monthSchedule
 }
 
+func (scheduleInitDataIn *ScheduleInitDataIn) convertFormat() *Groups {
+	var groups Groups
+
+
+
+	return &groups
+}
+
+func getGroupList() error {
+	var scheduleInitDataIn ScheduleInitDataIn
+	url := "https://www.ursei.ac.ru/Services/GetGSSchedIniData"
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err := json.Unmarshal([]byte(body), &scheduleInitDataIn); err != nil {
+		return err
+	}
+
+
+	return nil
+}
+
 func getScheduleData(groupId, yearId, monthNum int) (*MonthSchedule, error) {
 	var scheduleIn ScheduleIn
 	url := fmt.Sprintf(
@@ -103,7 +167,7 @@ func getScheduleData(groupId, yearId, monthNum int) (*MonthSchedule, error) {
 
 	body, err := io.ReadAll(resp.Body)
 	if err := json.Unmarshal([]byte(body), &scheduleIn); err != nil {
-		var scheduleInEmpty struct{string}
+		var scheduleInEmpty struct{ string }
 		if err := json.Unmarshal([]byte(body), &scheduleInEmpty); err != nil {
 			return nil, err
 		}
@@ -117,24 +181,25 @@ func getScheduleData(groupId, yearId, monthNum int) (*MonthSchedule, error) {
 		return nil, err
 	}
 
-	log.Printf("Getting %d_%d_%d schedule\n", groupId, yearId, monthNum);
+	log.Printf("Getting %d_%d_%d schedule\n", groupId, yearId, monthNum)
 	monthSchedule := scheduleIn.convertFormat(groupId, yearId, monthNum)
 
 	return monthSchedule, nil
 }
 
-func (monthSchedule *MonthSchedule) saveScheduleToRedis() {
+func (monthSchedule *MonthSchedule) saveScheduleToRedis() error {
 	ctx := context.Background()
 	rdb := redis.NewClient(&redisConnection)
 
 	scheduleJson, err := json.Marshal(monthSchedule)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	redisName := createRedisNameString(monthSchedule.GroupId, monthSchedule.YearId, monthSchedule.Month)
 
 	rdb.Set(ctx, redisName, scheduleJson, 0)
+	return nil
 }
 
 func getMonthScheduleFromDatabase(groupId, yearId, monthNum int) (*MonthSchedule, error) {
@@ -223,14 +288,16 @@ func getPrevMonths(group, year, month int) error {
 			continue
 		}
 
-		monthSchedule.saveScheduleToRedis()
+		if monthSchedule.saveScheduleToRedis(); err != nil {
+			log.Println(err)
+		}
 	}
 
 	return nil
 }
 
 func runWorkers() {
-	type scheduleInfo struct{
+	type scheduleInfo struct {
 		group int
 		year  int
 		month int
@@ -264,7 +331,9 @@ func runWorkers() {
 				log.Println(err)
 				return
 			}
-			monthSchedule.saveScheduleToRedis()
+			if monthSchedule.saveScheduleToRedis(); err != nil {
+				log.Println(err)
+			}
 		}(i)
 	}
 
